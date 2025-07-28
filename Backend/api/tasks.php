@@ -1,20 +1,16 @@
 <?php
 // --- MANIPULADOR DE ERROS GLOBAL ---
-// Este bloco irá capturar QUALQUER erro, aviso ou falha no PHP e formatá-lo como JSON.
-// Isto garante que o frontend nunca receba uma resposta HTML inválida.
 function shutdownHandler() {
     $error = error_get_last();
     if ($error && in_array($error['type'], [E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR, E_USER_ERROR, E_RECOVERABLE_ERROR])) {
-        // Se um erro fatal ocorreu, limpa qualquer saída parcial
         if (ob_get_length()) {
             ob_clean();
         }
         
-        // Garante que os cabeçalhos corretos são enviados
         header("Access-Control-Allow-Origin: http://localhost:3000");
         header("Access-Control-Allow-Credentials: true");
         header("Content-Type: application/json; charset=UTF-8");
-        http_response_code(500); // Internal Server Error
+        http_response_code(500);
 
         echo json_encode([
             'message' => 'Ocorreu um erro fatal no servidor que não pôde ser recuperado.',
@@ -28,9 +24,8 @@ function shutdownHandler() {
     }
 }
 register_shutdown_function('shutdownHandler');
-ob_start(); // Inicia o buffer de saída para podermos limpá-lo em caso de erro
+ob_start();
 
-// Ativa a exibição de todos os erros
 ini_set('display_errors', 1);
 error_reporting(E_ALL);
 
@@ -41,7 +36,6 @@ header("Access-Control-Allow-Methods: GET, POST, PUT, OPTIONS");
 header("Access-Control-Allow-Headers: Content-Type, Access-Control-Allow-Headers, Authorization, X-Requested-With");
 header("Content-Type: application/json; charset=UTF-8");
 
-// Resposta ao pedido pre-flight OPTIONS do navegador
 if ($_SERVER['REQUEST_METHOD'] == 'OPTIONS') {
     http_response_code(200);
     exit();
@@ -63,6 +57,31 @@ try {
 
     switch ($method) {
         case 'GET':
+            // Atualiza as tarefas expiradas antes de as buscar.
+            $expiration_query = "UPDATE tasks SET expired = 1, points = 
+                CASE 
+                    WHEN difficulty = 'fácil' THEN -2
+                    WHEN difficulty = 'médio' THEN -5
+                    WHEN difficulty = 'difícil' THEN -8
+                    ELSE 0
+                END
+                WHERE user_id = :user_id AND completed = 0 AND expired = 0 AND date < CURDATE()";
+            
+            $expiration_stmt = $db->prepare($expiration_query);
+            $expiration_stmt->bindParam(':user_id', $user_id);
+            $expiration_stmt->execute();
+
+            // --- CORREÇÃO APLICADA AQUI ---
+            // Calcula o total de pontos atualizado do utilizador
+            $points_query = "SELECT SUM(points) as total_points FROM tasks WHERE user_id = :user_id";
+            $points_stmt = $db->prepare($points_query);
+            $points_stmt->bindParam(':user_id', $user_id);
+            $points_stmt->execute();
+            $points_result = $points_stmt->fetch(PDO::FETCH_ASSOC);
+            $total_points = $points_result['total_points'] ?? 0;
+            // --- FIM DA CORREÇÃO ---
+
+            // Agora, busca a lista de tarefas já atualizada
             $query = "SELECT id, text, difficulty, date, recurrence, completed, expired, points FROM tasks WHERE user_id = :user_id ORDER BY created_at DESC";
             $stmt = $db->prepare($query);
             $stmt->bindParam(':user_id', $user_id);
@@ -77,7 +96,8 @@ try {
             }
 
             http_response_code(200);
-            echo json_encode($tasks);
+            // Retorna tanto as tarefas como o total de pontos atualizado
+            echo json_encode(['tasks' => $tasks, 'points' => (int)$total_points]);
             break;
 
         case 'POST':
@@ -91,12 +111,15 @@ try {
             $stmt = $db->prepare($query);
             
             $text = htmlspecialchars(strip_tags($data->text));
+            $difficulty = $data->difficulty;
+            $date = $data->date;
+            $recurrence = $data->recurrence ?? 'nenhuma';
             
             $stmt->bindParam(':user_id', $user_id);
             $stmt->bindParam(':text', $text);
-            $stmt->bindParam(':difficulty', $data->difficulty);
-            $stmt->bindParam(':date', $data->date);
-            $stmt->bindParam(':recurrence', $data->recurrence ?? 'nenhuma');
+            $stmt->bindParam(':difficulty', $difficulty);
+            $stmt->bindParam(':date', $date);
+            $stmt->bindParam(':recurrence', $recurrence);
 
             if ($stmt->execute()) {
                 http_response_code(201);
@@ -148,7 +171,7 @@ try {
             break;
     }
 } catch (InvalidArgumentException $e) {
-    http_response_code(400); // Bad Request
+    http_response_code(400);
     echo json_encode(['message' => $e->getMessage()]);
 } catch (PDOException $e) {
     http_response_code(500);
@@ -158,6 +181,5 @@ try {
     echo json_encode(['message' => 'Ocorreu um erro interno no servidor.', 'error' => $e->getMessage()]);
 }
 
-// Limpa e envia o buffer de saída
 ob_end_flush();
 ?>
